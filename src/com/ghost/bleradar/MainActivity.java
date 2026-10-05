@@ -86,6 +86,8 @@ public class MainActivity extends Activity {
     boolean soundOn = true, vibrateOn = false;
     ToneGenerator tone;
     Vibrator vibrator;
+    Pdr pdr;
+    final Locator locator = new Locator();
 
     float dp(float v) { return v * getResources().getDisplayMetrics().density; }
 
@@ -94,6 +96,8 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         labels = getSharedPreferences("labels", MODE_PRIVATE);
         vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        pdr = new Pdr(this);
+        pdr.onStep = locator::solve;
         try { tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80); } catch (RuntimeException e) { tone = null; }
         buildListScreen();
         setContentView(listScreen);
@@ -104,7 +108,7 @@ public class MainActivity extends Activity {
         super.onStart();
         if (hasPerms()) startScan(); else requestPermissions(neededPerms(), 1);
         ui.post(refresher);
-        if (target != null) ui.post(ticker);
+        if (target != null) { ui.post(ticker); startTracking(); }
     }
 
     @Override
@@ -113,6 +117,7 @@ public class MainActivity extends Activity {
         stopScan();
         ui.removeCallbacks(refresher);
         ui.removeCallbacks(ticker);
+        pdr.stop();
     }
 
     @Override
@@ -143,6 +148,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        if (code == 2) { if (target != null) startTracking(); return; }
         if (hasPerms()) startScan();
         else status = "Permissions denied - grant Nearby devices + Location in app settings";
     }
@@ -204,7 +210,7 @@ public class MainActivity extends Activity {
             String k = Ident.kind(rec);
             if (!k.isEmpty()) d.kind = k;
         }
-        if (d == target && radar != null) radar.invalidate();
+        if (d == target) locator.add(pdr.steps, pdr.x, pdr.y, rssi);
     }
 
     // ---------------------------------------------------------------- shared helpers
@@ -267,7 +273,7 @@ public class MainActivity extends Activity {
 
     final Runnable refresher = new Runnable() {
         @Override public void run() {
-            if (target == null) refreshList();
+            if (target == null) refreshList(); else locator.solve();
             ui.postDelayed(this, 1000);
         }
     };
@@ -417,16 +423,22 @@ public class MainActivity extends Activity {
         root.addView(radar, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout btns = new LinearLayout(this);
-        final Button snd = new Button(this), vib = new Button(this), lbl = new Button(this), back = new Button(this);
-        snd.setText(soundOn ? "Sound on" : "Sound off");
-        snd.setOnClickListener(v -> { soundOn = !soundOn; snd.setText(soundOn ? "Sound on" : "Sound off"); });
-        vib.setText(vibrateOn ? "Buzz on" : "Buzz off");
-        vib.setOnClickListener(v -> { vibrateOn = !vibrateOn; vib.setText(vibrateOn ? "Buzz on" : "Buzz off"); });
+        final Button snd = new Button(this), vib = new Button(this), rst = new Button(this),
+                lbl = new Button(this), back = new Button(this);
+        snd.setText(soundOn ? "Sound" : "Muted");
+        snd.setOnClickListener(v -> { soundOn = !soundOn; snd.setText(soundOn ? "Sound" : "Muted"); });
+        vib.setText(vibrateOn ? "Buzz" : "No buzz");
+        vib.setOnClickListener(v -> { vibrateOn = !vibrateOn; vib.setText(vibrateOn ? "Buzz" : "No buzz"); });
+        rst.setText("Reset");
+        rst.setOnClickListener(v -> resetTrack());
         lbl.setText("Label");
         lbl.setOnClickListener(v -> editLabel(target));
         back.setText("Back");
         back.setOnClickListener(v -> exitHunt());
-        for (Button bt : new Button[]{snd, vib, lbl, back}) btns.addView(bt, new LinearLayout.LayoutParams(0, -2, 1));
+        for (Button bt : new Button[]{snd, vib, rst, lbl, back}) {
+            bt.setAllCaps(false);
+            btns.addView(bt, new LinearLayout.LayoutParams(0, -2, 1));
+        }
         root.addView(btns);
 
         huntScreen = root;
@@ -434,11 +446,29 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         ui.removeCallbacks(ticker);
         ui.post(ticker);
+        resetTrack();
+        if (Build.VERSION.SDK_INT >= 29
+                && checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{Manifest.permission.ACTIVITY_RECOGNITION}, 2);
+        startTracking();
+    }
+
+    /** (Re)start motion sensors; the step detector needs ACTIVITY_RECOGNITION, else use the accelerometer. */
+    void startTracking() {
+        pdr.stop();
+        pdr.start(Build.VERSION.SDK_INT < 29
+                || checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED);
+    }
+
+    void resetTrack() {
+        pdr.reset();
+        locator.reset();
     }
 
     void exitHunt() {
         target = null;
         radar = null;
+        pdr.stop();
         ui.removeCallbacks(ticker);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(listScreen);
@@ -467,7 +497,7 @@ public class MainActivity extends Activity {
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Path path = new Path();
         long pingAt;
-        float shownHeat = 0;
+        float shownHeat = 0, shownRange = 6;
 
         RadarView(Context c) { super(c); }
 
@@ -500,8 +530,12 @@ public class MainActivity extends Activity {
                 c.drawLine(cx, cy, cx + (float) Math.cos(a) * R, cy + (float) Math.sin(a) * R, p);
             }
 
-            // Ghost blob: grows and glows as you get hotter
-            float glow = R * (0.15f + 0.8f * ht);
+            // Once you've walked enough, the radar becomes a heading-up map.
+            boolean mapped = locator.valid && !lost;
+            if (mapped) drawMap(c, cx, cy, R);
+
+            // Signal blob: grows and glows as you get hotter (small once the map takes over)
+            float glow = R * (mapped ? 0.06f + 0.12f * ht : 0.15f + 0.8f * ht);
             p.setStyle(Paint.Style.FILL);
             for (int i = 6; i >= 1; i--) {
                 p.setColor(heatColor(ht, lost ? 10 : 18 + i * 4));
@@ -518,6 +552,7 @@ public class MainActivity extends Activity {
                 p.setColor(heatColor(ht, (int) (220 * (1 - pt))));
                 c.drawCircle(cx, cy, glow * 0.45f + R * 0.6f * pt, p);
             }
+            if (mapped) drawYou(c, cx, cy);
 
             // Text
             p.setStyle(Paint.Style.FILL);
@@ -557,10 +592,101 @@ public class MainActivity extends Activity {
             long ago = (now - d.lastSeen) / 1000;
             c.drawText(String.format(Locale.US, "%.0f dBm  ·  ~%.1f m  ·  seen %ds ago",
                     d.ema, distanceM(d), ago), cx, ty + dp(64), p);
+
+            p.setTextSize(dp(15));
+            p.setColor(0xFFD9B8FF);
+            if (mapped) {
+                float[] rel = relative(locator.bestX, locator.bestY);
+                float dist = (float) Math.hypot(rel[0], rel[1]);
+                c.drawText(String.format(Locale.US, "\uD83D\uDC7B ~%.0f m %s  \u00b7  %d%% sure", dist,
+                        direction(rel[0], rel[1]), Math.round(100 * locator.confidence)), cx, ty + dp(90), p);
+                if (locator.ambiguous) {
+                    p.setTextSize(dp(12));
+                    p.setColor(0xFF8A9A95);
+                    c.drawText("left/right may be mirrored \u2014 turn 90\u00b0 and walk a few steps", cx, ty + dp(110), p);
+                }
+            } else if (!lost) {
+                p.setColor(0xFF8A9A95);
+                c.drawText(pdr.hasHeading
+                        ? "walk slowly forward to map it  (" + pdr.steps + " steps)"
+                        : "no motion sensors \u2014 warmer/colder only", cx, ty + dp(90), p);
+            }
             p.setTextAlign(Paint.Align.LEFT);
 
             drawHistory(c, d, now, dp(16), h - dp(90), w - dp(32), dp(70));
             postInvalidateOnAnimation();
+        }
+
+        /** World point -> {metres to your right, metres ahead}, using the current heading. */
+        float[] relative(float wx, float wy) {
+            float rx = wx - pdr.x, ry = wy - pdr.y;
+            float cos = (float) Math.cos(pdr.heading), sin = (float) Math.sin(pdr.heading);
+            return new float[]{rx * cos - ry * sin, rx * sin + ry * cos};
+        }
+
+        String direction(float right, float ahead) {
+            double b = Math.toDegrees(Math.atan2(right, ahead)); // 0 = ahead, +90 = right
+            String[] names = {"ahead", "ahead-right", "to your right", "behind-right",
+                    "behind you", "behind-left", "to your left", "ahead-left"};
+            return names[(int) Math.floorMod(Math.round(b / 45), 8)];
+        }
+
+        /** Heading-up map: probability heatmap, walked trail coloured by RSSI, ghost at the best guess. */
+        void drawMap(Canvas c, float cx, float cy, float R) {
+            Locator L = locator;
+            float[] best = relative(L.bestX, L.bestY);
+            float range = Math.max(4f, Math.min(15f, (float) Math.hypot(best[0], best[1]) * 1.4f));
+            shownRange += (range - shownRange) * 0.05f; // ease the zoom
+            float s = R / shownRange;
+
+            c.save();
+            path.reset();
+            path.addCircle(cx, cy, R, Path.Direction.CW);
+            c.clipPath(path);
+
+            p.setStyle(Paint.Style.FILL);
+            float cellR = Locator.CELL * s * 0.75f;
+            for (int i = 0; i < L.prob.length; i++) {
+                float q = L.prob[i] / L.maxProb;
+                if (q < 0.05f) continue;
+                float[] r = relative(L.gx0 + (i % L.gw) * Locator.CELL, L.gy0 + (i / L.gw) * Locator.CELL);
+                p.setColor(Color.argb((int) (160 * q), 190, 110, 255));
+                c.drawCircle(cx + r[0] * s, cy - r[1] * s, cellR, p);
+            }
+            for (float[] pt : L.pts) {
+                float[] r = relative(pt[0], pt[1]);
+                p.setColor(heatColor(heat(pt[2] / pt[3]), 230));
+                c.drawCircle(cx + r[0] * s, cy - r[1] * s, dp(3), p);
+            }
+            c.restore();
+
+            // Ring distances
+            p.setTextSize(dp(10));
+            p.setTextAlign(Paint.Align.LEFT);
+            p.setColor(0xFF5A8A72);
+            for (int i = 1; i <= 4; i++)
+                c.drawText(String.format(Locale.US, "%.0fm", shownRange * i / 4), cx + dp(3), cy - R * i / 4 - dp(2), p);
+
+            // Ghost at the best guess, pinned to the rim if it's off the map.
+            float gx = best[0] * s, gy = -best[1] * s, gd = (float) Math.hypot(gx, gy);
+            if (gd > R * 0.92f) { gx *= R * 0.92f / gd; gy *= R * 0.92f / gd; }
+            p.setTextAlign(Paint.Align.CENTER);
+            p.setTextSize(dp(20 + 16 * L.confidence));
+            p.setColor(Color.WHITE);
+            c.drawText("\uD83D\uDC7B", cx + gx, cy + gy + p.getTextSize() / 3, p);
+        }
+
+        /** You: an arrow at the centre pointing the way you're facing (always up). */
+        void drawYou(Canvas c, float cx, float cy) {
+            path.reset();
+            path.moveTo(cx, cy - dp(11));
+            path.lineTo(cx + dp(7), cy + dp(7));
+            path.lineTo(cx, cy + dp(3));
+            path.lineTo(cx - dp(7), cy + dp(7));
+            path.close();
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.WHITE);
+            c.drawPath(path, p);
         }
 
         String heatWord(float h) {
