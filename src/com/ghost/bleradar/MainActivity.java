@@ -88,7 +88,8 @@ public class MainActivity extends Activity {
     Vibrator vibrator;
     Pdr pdr;
     final Locator locator = new Locator();
-    HuntLog huntLog = new HuntLog();
+    Recorder recorder;
+    Button recBtn, markBtn;
 
     float dp(float v) { return v * getResources().getDisplayMetrics().density; }
 
@@ -100,8 +101,9 @@ public class MainActivity extends Activity {
         pdr = new Pdr(this);
         pdr.onStep = () -> {
             locator.solve();
-            huntLog.row("step", pdr, Integer.MIN_VALUE, locator);
+            if (recording() && target != null) recorder.estimate(target.addr, locator);
         };
+        pdr.onStepAttempt = (ok, swing) -> { if (recording()) recorder.step(pdr, ok, swing); };
         try { tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80); } catch (RuntimeException e) { tone = null; }
         buildListScreen();
         setContentView(listScreen);
@@ -112,7 +114,9 @@ public class MainActivity extends Activity {
         super.onStart();
         if (hasPerms()) startScan(); else requestPermissions(neededPerms(), 1);
         ui.post(refresher);
-        if (target != null) { ui.post(ticker); startTracking(); }
+        if (target != null) ui.post(ticker);
+        if (target != null || recording()) startTracking();
+        if (recording()) ui.post(poseLogger);
     }
 
     @Override
@@ -122,12 +126,14 @@ public class MainActivity extends Activity {
         ui.removeCallbacks(refresher);
         ui.removeCallbacks(ticker);
         pdr.stop();
-        huntLog.flush();
+        ui.removeCallbacks(poseLogger);
+        if (recording()) recorder.flush();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (recording()) recorder.stop();
         if (tone != null) tone.release();
     }
 
@@ -215,9 +221,9 @@ public class MainActivity extends Activity {
             String k = Ident.kind(rec);
             if (!k.isEmpty()) d.kind = k;
         }
+        if (recording()) recorder.adv(d, rssi, rec == null ? null : trimZeros(rec.getBytes()));
         if (d == target) {
             locator.add(pdr.steps, pdr.x, pdr.y, rssi);
-            huntLog.row("rssi", pdr, rssi, locator);
         }
     }
 
@@ -284,8 +290,12 @@ public class MainActivity extends Activity {
             if (target == null) refreshList();
             else {
                 locator.solve();
-                huntLog.row("pose", pdr, Integer.MIN_VALUE, locator);
-                huntLog.flush();
+                if (recording()) recorder.estimate(target.addr, locator);
+            }
+            if (recording()) {
+                recorder.flush();
+                if (target == null) header.setText(String.format(Locale.US,
+                        "\u25CF REC  %d devices \u00b7 %d rows \u00b7 mark %d", devs.size(), recorder.rows, recorder.marks));
             }
             ui.postDelayed(this, 1000);
         }
@@ -315,6 +325,19 @@ public class MainActivity extends Activity {
             refreshList();
         });
         bar.addView(filter);
+        recBtn = new Button(this);
+        recBtn.setText("Rec");
+        recBtn.setOnClickListener(v -> toggleRecording());
+        bar.addView(recBtn);
+        markBtn = new Button(this);
+        markBtn.setText("Mark");
+        markBtn.setVisibility(View.GONE);
+        markBtn.setOnClickListener(v -> {
+            int n = recorder.mark();
+            if (vibrator != null) vibrator.vibrate(VibrationEffect.createOneShot(60, 200));
+            android.widget.Toast.makeText(this, "Mark " + n, android.widget.Toast.LENGTH_SHORT).show();
+        });
+        bar.addView(markBtn);
         root.addView(bar);
 
         ListView lv = new ListView(this);
@@ -429,8 +452,7 @@ public class MainActivity extends Activity {
 
     void enterHunt(Dev d) {
         target = d;
-        huntLog.close();
-        huntLog = HuntLog.open(this, d.addr);
+        if (recording()) recorder.event("hunt_start", d.addr, title(d));
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.BLACK);
@@ -475,17 +497,64 @@ public class MainActivity extends Activity {
                 || checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED);
     }
 
+    // ---------------------------------------------------------------- survey recording
+
+    String appVersion() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Exception e) { return "?"; }
+    }
+
+    boolean recording() { return recorder != null && recorder.active(); }
+
+    void toggleRecording() {
+        if (recording()) {
+            recorder.stop();
+            ui.removeCallbacks(poseLogger);
+            if (target == null) pdr.stop();
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            new AlertDialog.Builder(this).setTitle("Recording saved")
+                    .setMessage("Download/GhostRadar/" + recorder.name + "\n" + recorder.rows + " rows, " + recorder.marks + " marks")
+                    .setPositiveButton("OK", null).show();
+        } else {
+            recorder = Recorder.start(this, "Ghost Radar " + appVersion() + " on " + Build.MANUFACTURER + " " + Build.MODEL);
+            if (!recording()) { status = "Couldn't create recording in Downloads"; refreshList(); return; }
+            pdr.reset();
+            startTracking();
+            ui.post(poseLogger);
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        recBtn.setText(recording() ? "Stop" : "Rec");
+        markBtn.setVisibility(recording() ? View.VISIBLE : View.GONE);
+        refreshList();
+    }
+
+    /** Orientation at ~5 Hz while recording. */
+    final Runnable poseLogger = new Runnable() {
+        @Override public void run() {
+            if (!recording()) return;
+            recorder.pose(pdr);
+            ui.postDelayed(this, 200);
+        }
+    };
+
+    static byte[] trimZeros(byte[] a) {
+        if (a == null) return null;
+        int n = a.length;
+        while (n > 0 && a[n - 1] == 0) n--;
+        return java.util.Arrays.copyOf(a, n);
+    }
+
     void resetTrack() {
         pdr.reset();
         locator.reset();
-        huntLog.row("reset", pdr, Integer.MIN_VALUE, locator);
+        if (recording() && target != null) recorder.event("hunt_reset", target.addr, "");
     }
 
     void exitHunt() {
         target = null;
         radar = null;
-        pdr.stop();
-        huntLog.close();
+        if (recording()) recorder.event("hunt_end", "", "");
+        else pdr.stop();
         ui.removeCallbacks(ticker);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(listScreen);
@@ -632,6 +701,12 @@ public class MainActivity extends Activity {
             p.setTextAlign(Paint.Align.LEFT);
 
             drawHistory(c, d, now, dp(16), h - dp(90), w - dp(32), dp(70));
+            if (recording()) {
+                p.setTextAlign(Paint.Align.LEFT);
+                p.setTextSize(dp(12));
+                p.setColor(0xFFFF4040);
+                c.drawText("\u25CF REC", dp(10), dp(16), p);
+            }
             postInvalidateOnAnimation();
         }
 

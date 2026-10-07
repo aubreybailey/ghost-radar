@@ -25,7 +25,10 @@ class Pdr implements SensorEventListener {
     float heading, x, y;
     int steps, rejectedSteps;
     boolean hasHeading;
-    Runnable onStep;
+    Runnable onStep;               // accepted steps only
+    StepAttempt onStepAttempt;     // every step the detector reports, for recording
+
+    interface StepAttempt { void on(boolean accepted, float tiltSwingDeg); }
 
     private final float[] rot = new float[9];
     private float accBase = SensorManager.GRAVITY_EARTH;
@@ -89,6 +92,9 @@ class Pdr implements SensorEventListener {
         }
     }
 
+    /** Latest world "up" in device coordinates {t, gx, gy, gz}, or null before the first reading. */
+    float[] gravity() { return tilts.peekLast(); }
+
     /** Largest angle (degrees) between the current tilt and any tilt in the last STEADY_MS. */
     float tiltSwing() {
         float[] cur = tilts.peekLast();
@@ -100,7 +106,10 @@ class Pdr implements SensorEventListener {
 
     private void step() {
         if (!hasHeading) return;
-        if (tiltSwing() > MAX_TILT_SWING_DEG) { rejectedSteps++; return; }
+        float swing = tiltSwing();
+        boolean ok = swing <= MAX_TILT_SWING_DEG;
+        if (onStepAttempt != null) onStepAttempt.on(ok, swing);
+        if (!ok) { rejectedSteps++; return; }
         x += STEP_M * (float) Math.sin(heading);
         y += STEP_M * (float) Math.cos(heading);
         steps++;

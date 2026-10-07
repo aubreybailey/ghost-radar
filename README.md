@@ -41,3 +41,17 @@ builds signed with the same key.
 - Your body blocks 2.4 GHz — turn in a circle to find the strongest direction.
 - Phones, watches and AirTags rotate their address every ~15 min. If the target
   goes "SIGNAL LOST", look for a new strong entry of the same type.
+
+## Recording a survey (for mapping)
+
+Tap **Rec** on the device list to log everything to
+`Download/GhostRadar/survey-<time>.csv`: every advertisement from every device,
+every step (kept or ignored), orientation at 5 Hz, and **Mark** taps. Hunts
+started while recording are logged into the same file.
+
+A good survey:
+
+1. Hold the phone still in front of you for ~15 s (noise calibration).
+2. Tap **Mark** at your starting spot.
+3. Walk a slow loop through the room(s), phone held steady, back to the start.
+4. Tap **Mark** again on the starting spot, then **Stop**.
