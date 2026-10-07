@@ -103,7 +103,7 @@ public class MainActivity extends Activity {
             locator.solve();
             if (recording() && target != null) recorder.estimate(target.addr, locator);
         };
-        pdr.onStepAttempt = (ok, swing) -> { if (recording()) recorder.step(pdr, ok, swing); };
+        pdr.onStepAttempt = st -> { if (recording()) recorder.step(st); };
         try { tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80); } catch (RuntimeException e) { tone = null; }
         buildListScreen();
         setContentView(listScreen);
