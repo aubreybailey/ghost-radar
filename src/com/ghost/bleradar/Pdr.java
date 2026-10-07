@@ -15,10 +15,15 @@ import android.os.SystemClock;
  */
 class Pdr implements SensorEventListener {
     static final float STEP_M = 0.6f; // a slow, careful step
+    // Walking with the phone held out keeps its tilt steady even through turns;
+    // waving it around (or lying in bed) doesn't. Steps taken while the tilt
+    // swung more than this in the last STEADY_MS are not counted.
+    static final float MAX_TILT_SWING_DEG = 20f;
+    static final long STEADY_MS = 800;
 
     final SensorManager sm;
     float heading, x, y;
-    int steps;
+    int steps, rejectedSteps;
     boolean hasHeading;
     Runnable onStep;
 
@@ -26,6 +31,8 @@ class Pdr implements SensorEventListener {
     private float accBase = SensorManager.GRAVITY_EARTH;
     private boolean accHigh;
     private long lastStepAt;
+    /** Recent gravity directions in device coordinates: {t, gx, gy, gz}. */
+    private final java.util.ArrayDeque<float[]> tilts = new java.util.ArrayDeque<>();
 
     Pdr(Context c) { sm = (SensorManager) c.getSystemService(Context.SENSOR_SERVICE); }
 
@@ -40,7 +47,7 @@ class Pdr implements SensorEventListener {
 
     void stop() { sm.unregisterListener(this); }
 
-    void reset() { x = y = 0; steps = 0; }
+    void reset() { x = y = 0; steps = rejectedSteps = 0; }
 
     @Override public void onSensorChanged(SensorEvent e) {
         switch (e.sensor.getType()) {
@@ -55,6 +62,10 @@ class Pdr implements SensorEventListener {
                     heading = (float) Math.atan2(fx, fy);
                     hasHeading = true;
                 }
+                // World "up" seen from the device (bottom row of R) - independent of heading.
+                long now = SystemClock.elapsedRealtime();
+                tilts.addLast(new float[]{now, rot[6], rot[7], rot[8]});
+                while (now - (long) tilts.peekFirst()[0] > STEADY_MS) tilts.removeFirst();
                 break;
             }
             case Sensor.TYPE_STEP_DETECTOR:
@@ -78,8 +89,18 @@ class Pdr implements SensorEventListener {
         }
     }
 
+    /** Largest angle (degrees) between the current tilt and any tilt in the last STEADY_MS. */
+    float tiltSwing() {
+        float[] cur = tilts.peekLast();
+        if (cur == null) return 0;
+        float minDot = 1;
+        for (float[] t : tilts) minDot = Math.min(minDot, cur[1] * t[1] + cur[2] * t[2] + cur[3] * t[3]);
+        return (float) Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, minDot))));
+    }
+
     private void step() {
         if (!hasHeading) return;
+        if (tiltSwing() > MAX_TILT_SWING_DEG) { rejectedSteps++; return; }
         x += STEP_M * (float) Math.sin(heading);
         y += STEP_M * (float) Math.cos(heading);
         steps++;

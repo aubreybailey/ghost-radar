@@ -36,7 +36,7 @@ class HuntLog {
             if (u == null) return log;
             log.out = new BufferedWriter(new OutputStreamWriter(c.getContentResolver().openOutputStream(u), "UTF-8"));
             log.t0 = SystemClock.elapsedRealtime();
-            log.out.write("ms,event,steps,x,y,heading_deg,rssi,best_x,best_y,confidence,ambiguous\n");
+            log.out.write("ms,event,steps,x,y,heading_deg,rssi,best_x,best_y,confidence,ambiguous,rejected_steps,tilt_swing_deg\n");
         } catch (Exception e) {
             log.out = null;
         }
@@ -46,13 +46,14 @@ class HuntLog {
     void row(String event, Pdr pdr, int rssi, Locator loc) {
         if (out == null) return;
         try {
-            out.write(String.format(Locale.US, "%d,%s,%d,%.2f,%.2f,%.1f,%s,%s,%s,%s,%s\n",
+            out.write(String.format(Locale.US, "%d,%s,%d,%.2f,%.2f,%.1f,%s,%s,%s,%s,%s,%d,%.0f\n",
                     SystemClock.elapsedRealtime() - t0, event, pdr.steps, pdr.x, pdr.y,
                     Math.toDegrees(pdr.heading), rssi == Integer.MIN_VALUE ? "" : String.valueOf(rssi),
                     loc.valid ? String.format(Locale.US, "%.2f", loc.bestX) : "",
                     loc.valid ? String.format(Locale.US, "%.2f", loc.bestY) : "",
                     loc.valid ? String.format(Locale.US, "%.2f", loc.confidence) : "",
-                    loc.valid ? (loc.ambiguous ? "1" : "0") : ""));
+                    loc.valid ? (loc.ambiguous ? "1" : "0") : "",
+                    pdr.rejectedSteps, pdr.tiltSwing()));
         } catch (Exception e) {
             out = null;
         }

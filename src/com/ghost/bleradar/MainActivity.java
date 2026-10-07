@@ -625,7 +625,8 @@ public class MainActivity extends Activity {
             } else if (!lost) {
                 p.setColor(0xFF8A9A95);
                 c.drawText(pdr.hasHeading
-                        ? "walk slowly forward to map it  (" + pdr.steps + " steps)"
+                        ? "walk slowly, phone held steady  (" + pdr.steps + " steps"
+                                + (pdr.rejectedSteps > 0 ? ", " + pdr.rejectedSteps + " ignored)" : ")")
                         : "no motion sensors \u2014 warmer/colder only", cx, ty + dp(90), p);
             }
             p.setTextAlign(Paint.Align.LEFT);
