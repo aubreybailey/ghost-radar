@@ -25,7 +25,7 @@ import java.util.Locale;
  *   dev        addr; info = name|kind|txPower|connectable|payload hex (first sighting and payload changes)
  *   adv        addr, rssi
  *   pose       heading, gravity (world up in device coords), tilt swing
- *   step       heading, gravity, tilt swing, accepted (0/1)
+ *   step       heading/gravity/tilt swing at the step's own time, accepted (0/1); info = lag_ms=delivery delay
  *   mark       info = mark number (user tapped Mark)
  *   hunt_start / hunt_end / hunt_reset   addr
  *   est        addr; info = best_x;best_y;confidence;ambiguous (hunt-local frame)
@@ -90,8 +90,9 @@ class Recorder {
         write("pose", "", "", deg(pdr), g, f0(pdr.tiltSwing()), "", "");
     }
 
-    void step(Pdr pdr, boolean accepted, float swing) {
-        write("step", "", "", deg(pdr), pdr.gravity(), f0(swing), accepted ? "1" : "0", "");
+    void step(Pdr.StepInfo s) {
+        write("step", "", "", String.format(Locale.US, "%.1f", Math.toDegrees(s.headingRad)), s.gravity,
+                f0(s.swingDeg), s.accepted ? "1" : "0", "lag_ms=" + s.lagMs);
     }
 
     void estimate(String addr, Locator loc) {
@@ -121,7 +122,7 @@ class Recorder {
             StringBuilder b = new StringBuilder(96);
             b.append(SystemClock.elapsedRealtime() - t0).append(',').append(event).append(',')
                     .append(addr).append(',').append(rssi).append(',').append(heading).append(',');
-            if (g != null) b.append(String.format(Locale.US, "%.3f,%.3f,%.3f", g[1], g[2], g[3]));
+            if (g != null) b.append(String.format(Locale.US, "%.3f,%.3f,%.3f", g[0], g[1], g[2]));
             else b.append(",,");
             b.append(',').append(swing).append(',').append(accepted).append(',').append(csv(info)).append('\n');
             out.write(b.toString());

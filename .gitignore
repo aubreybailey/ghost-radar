@@ -4,3 +4,4 @@ sdk/
 *.keystore
 *.jks
 *.idsig
+data/
