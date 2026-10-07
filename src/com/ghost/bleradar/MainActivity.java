@@ -88,6 +88,7 @@ public class MainActivity extends Activity {
     Vibrator vibrator;
     Pdr pdr;
     final Locator locator = new Locator();
+    HuntLog huntLog = new HuntLog();
 
     float dp(float v) { return v * getResources().getDisplayMetrics().density; }
 
@@ -97,7 +98,10 @@ public class MainActivity extends Activity {
         labels = getSharedPreferences("labels", MODE_PRIVATE);
         vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
         pdr = new Pdr(this);
-        pdr.onStep = locator::solve;
+        pdr.onStep = () -> {
+            locator.solve();
+            huntLog.row("step", pdr, Integer.MIN_VALUE, locator);
+        };
         try { tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80); } catch (RuntimeException e) { tone = null; }
         buildListScreen();
         setContentView(listScreen);
@@ -118,6 +122,7 @@ public class MainActivity extends Activity {
         ui.removeCallbacks(refresher);
         ui.removeCallbacks(ticker);
         pdr.stop();
+        huntLog.flush();
     }
 
     @Override
@@ -210,7 +215,10 @@ public class MainActivity extends Activity {
             String k = Ident.kind(rec);
             if (!k.isEmpty()) d.kind = k;
         }
-        if (d == target) locator.add(pdr.steps, pdr.x, pdr.y, rssi);
+        if (d == target) {
+            locator.add(pdr.steps, pdr.x, pdr.y, rssi);
+            huntLog.row("rssi", pdr, rssi, locator);
+        }
     }
 
     // ---------------------------------------------------------------- shared helpers
@@ -273,7 +281,12 @@ public class MainActivity extends Activity {
 
     final Runnable refresher = new Runnable() {
         @Override public void run() {
-            if (target == null) refreshList(); else locator.solve();
+            if (target == null) refreshList();
+            else {
+                locator.solve();
+                huntLog.row("pose", pdr, Integer.MIN_VALUE, locator);
+                huntLog.flush();
+            }
             ui.postDelayed(this, 1000);
         }
     };
@@ -416,6 +429,8 @@ public class MainActivity extends Activity {
 
     void enterHunt(Dev d) {
         target = d;
+        huntLog.close();
+        huntLog = HuntLog.open(this, d.addr);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.BLACK);
@@ -463,12 +478,14 @@ public class MainActivity extends Activity {
     void resetTrack() {
         pdr.reset();
         locator.reset();
+        huntLog.row("reset", pdr, Integer.MIN_VALUE, locator);
     }
 
     void exitHunt() {
         target = null;
         radar = null;
         pdr.stop();
+        huntLog.close();
         ui.removeCallbacks(ticker);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(listScreen);
